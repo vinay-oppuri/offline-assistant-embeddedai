@@ -1,21 +1,18 @@
 import sys
-from assistant.parser import CommandParser
-from assistant.executor import CommandExecutor
+from assistant.parser import parse
+from assistant.executor import execute
 from assistant.cli import CLIInterface
 
 
 def main():
 
-    parser = CommandParser()
-    executor = CommandExecutor()
-
     # If arguments provided → direct command
     if len(sys.argv) > 1:
 
         command = " ".join(sys.argv[1:])
-        intent, value = parser.parse(command)
+        parsed_cmd = parse(command)
 
-        executor.execute(intent, value)
+        execute(parsed_cmd)
 
     # Otherwise open interactive CLI
     else:

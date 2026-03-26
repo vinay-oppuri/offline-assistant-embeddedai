@@ -3,8 +3,8 @@ import sys
 from assistant.cli import CLIInterface
 from assistant.wake_word import WakeWordDetector
 from assistant.speech_to_text import SpeechToText
-from assistant.parser import CommandParser
-from assistant.executor import CommandExecutor
+from assistant.parser import parse
+from assistant.executor import execute
 
 
 class OfflineAssistant:
@@ -12,9 +12,7 @@ class OfflineAssistant:
     def __init__(self):
 
         self.wake = WakeWordDetector()
-        self.stt = SpeechToText()
-        self.parser = CommandParser()
-        self.executor = CommandExecutor()
+        self.stt = SpeechToText(model_path="models/vosk-model-small-en-us-0.15")
 
     def run_voice(self):
 
@@ -26,9 +24,9 @@ class OfflineAssistant:
 
             command = self.stt.listen()
 
-            intent, value = self.parser.parse(command)
+            parsed_cmd = parse(command)
 
-            self.executor.execute(intent, value)
+            execute(parsed_cmd)
 
     def run_cli(self):
 

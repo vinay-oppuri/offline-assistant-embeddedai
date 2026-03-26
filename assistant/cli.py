@@ -1,13 +1,11 @@
-from assistant.parser import CommandParser
-from assistant.executor import CommandExecutor
+from assistant.parser import parse
+from assistant.executor import execute
 
 
 class CLIInterface:
 
     def __init__(self):
-
-        self.parser = CommandParser()
-        self.executor = CommandExecutor()
+        pass
 
     def start(self):
 
@@ -22,6 +20,6 @@ class CLIInterface:
                 print("Goodbye")
                 break
 
-            intent, value = self.parser.parse(command)
+            parsed_cmd = parse(command)
 
-            self.executor.execute(intent, value)
+            execute(parsed_cmd)
