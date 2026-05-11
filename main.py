@@ -19,10 +19,15 @@ class OfflineAssistant:
         if self.wake is not None and self.stt is not None:
             return
 
+        from assistant.audio_stream import AudioStream
         from assistant.speech_to_text import SpeechToText
         from assistant.wake_word import WakeWordDetector
 
         report = BenchmarkReport()
+
+        # Start the shared audio stream once — it stays running for the
+        # entire voice loop, serving both wake-word and STT.
+        AudioStream.get().start()
 
         start = time.perf_counter()
         self.wake = WakeWordDetector()

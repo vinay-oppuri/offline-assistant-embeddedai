@@ -1,12 +1,10 @@
 import json
-import queue
 
-import sounddevice as sd
 import vosk
 
+from assistant.audio_stream import AudioStream, SAMPLE_RATE, STT_ACCUMULATE
 from assistant.parser import build_grammar_vocab
 
-SAMPLE_RATE = 16000
 DEFAULT_LISTEN_TIMEOUT_SECONDS = 3.0
 
 
@@ -15,37 +13,66 @@ class SpeechToText:
         self.model = vosk.Model(model_path)
         grammar_json = json.dumps(build_grammar_vocab())
         self.recognizer = vosk.KaldiRecognizer(self.model, SAMPLE_RATE, grammar_json)
-        self.audio_queue: queue.Queue = queue.Queue()
-
-    def _audio_callback(self, indata, frames, time, status):
-        self.audio_queue.put(bytes(indata))
 
     def listen(self, timeout_seconds: float = DEFAULT_LISTEN_TIMEOUT_SECONDS) -> str:
-        """Block until speech is detected or timeout. Returns transcribed text."""
+        """Recognise speech from the shared audio stream.
+
+        First processes any ring-buffer backlog (so the start of the
+        command spoken right after the wake word is never lost), then
+        reads live frames until Vosk fires an endpoint or the timeout
+        expires.
+        """
         self.recognizer.Reset()
-        frames_per_block = int(SAMPLE_RATE * 0.1)
-        max_blocks = int(timeout_seconds / 0.1)
+
+        stream = AudioStream.get()
         result_text = ""
 
-        with sd.RawInputStream(
-            samplerate=SAMPLE_RATE,
-            blocksize=frames_per_block,
-            dtype="int16",
-            channels=1,
-            callback=self._audio_callback,
-        ):
-            for _ in range(max_blocks):
-                try:
-                    data = self.audio_queue.get(timeout=0.2)
-                except queue.Empty:
-                    continue
+        # -----------------------------------------------------------
+        # 1. Feed the ring-buffer backlog into Vosk so we don't miss
+        #    the first word of the command.
+        # -----------------------------------------------------------
+        backlog = stream.drain_ring_buffer()
+        accumulated = b""
+        for frame in backlog:
+            accumulated += frame
+            if len(accumulated) >= STT_ACCUMULATE * len(frame):
+                if self.recognizer.AcceptWaveform(accumulated):
+                    result = json.loads(self.recognizer.Result())
+                    text = result.get("text", "").strip()
+                    if text and text != "[unk]":
+                        return text
+                accumulated = b""
+        # Flush any remaining backlog
+        if accumulated:
+            self.recognizer.AcceptWaveform(accumulated)
 
-                if self.recognizer.AcceptWaveform(data):
+        # -----------------------------------------------------------
+        # 2. Read live audio frames until timeout or endpoint.
+        # -----------------------------------------------------------
+        frame_duration = 0.01  # 10 ms per frame
+        max_frames = int(timeout_seconds / frame_duration)
+        accumulated = b""
+
+        for _ in range(max_frames):
+            frame = stream.read_frame(timeout=0.2)
+            if frame is None:
+                continue
+
+            accumulated += frame
+
+            # Hand Vosk a chunk every STT_ACCUMULATE frames (~100 ms)
+            if len(accumulated) >= STT_ACCUMULATE * len(frame):
+                if self.recognizer.AcceptWaveform(accumulated):
                     result = json.loads(self.recognizer.Result())
                     text = result.get("text", "").strip()
                     if text and text != "[unk]":
                         result_text = text
                         break
+                accumulated = b""
+
+        # Flush anything left in the accumulator
+        if accumulated:
+            self.recognizer.AcceptWaveform(accumulated)
 
         if not result_text:
             partial = json.loads(self.recognizer.PartialResult())
