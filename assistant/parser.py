@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from rapidfuzz import process, fuzz
 
@@ -46,6 +47,12 @@ WORD_NUMBERS = {
     "ten": 10, "fifteen": 15, "twenty": 20, "thirty": 30, "sixty": 60,
 }
 
+GRAMMAR_EXTRA_WORDS = {
+    "close", "max", "min", "percent", "second", "seconds", "minute", "minutes",
+    "yes", "no", "okay", "cancel", "visual", "studio", "word", "excel", "steam",
+    "opera", "file", "folder", "show", "computer", "status", "capture", "screen",
+}
+
 
 @dataclass
 class ParsedCommand:
@@ -67,6 +74,25 @@ def _fuzzy_match_app(word: str) -> str | None:
     return result[0] if result else None
 
 
+def _contains_phrase(text: str, phrase: str) -> bool:
+    """Match a phrase on word boundaries so 'start' does not match 'restart'."""
+    pattern = r"(?<!\w)" + re.escape(phrase) + r"(?!\w)"
+    return re.search(pattern, text) is not None
+
+
+def _exact_match_intent(text: str) -> str | None:
+    """Prefer explicit phrase matches before fuzzy matching."""
+    phrases: list[tuple[str, str]] = []
+    for intent, intent_phrases in INTENTS.items():
+        for phrase in intent_phrases:
+            phrases.append((intent, phrase))
+
+    for intent, phrase in sorted(phrases, key=lambda item: len(item[1]), reverse=True):
+        if _contains_phrase(text, phrase):
+            return intent
+    return None
+
+
 def _fuzzy_match_intent(text: str) -> str | None:
     """Match text against all intent trigger phrases."""
     best_intent, best_score = None, 0
@@ -77,6 +103,11 @@ def _fuzzy_match_intent(text: str) -> str | None:
                 best_score = score
                 best_intent = intent
     return best_intent if best_score >= 65 else None
+
+
+def match_intent(text: str) -> str | None:
+    """Match command intent with exact phrase priority, then fuzzy fallback."""
+    return _exact_match_intent(text) or _fuzzy_match_intent(text)
 
 
 def _extract_timer_seconds(text: str) -> int | None:
@@ -92,9 +123,28 @@ def _extract_timer_seconds(text: str) -> int | None:
     return None
 
 
+def build_grammar_vocab() -> list[str]:
+    """Build Vosk grammar from parser-owned commands so STT and parsing stay synced."""
+    vocab: set[str] = {"[unk]"}
+
+    for phrases in INTENTS.values():
+        for phrase in phrases:
+            vocab.add(phrase)
+            vocab.update(phrase.split())
+
+    for app_name in APP_MAP:
+        vocab.add(app_name)
+        vocab.update(app_name.split())
+
+    vocab.update(WORD_NUMBERS.keys())
+    vocab.update(GRAMMAR_EXTRA_WORDS)
+
+    return sorted(vocab)
+
+
 def parse(text: str) -> ParsedCommand:
     text = text.lower().strip()
-    intent = _fuzzy_match_intent(text)
+    intent = match_intent(text)
 
     if intent == "open_app":
         # Look for app name in the tokens that follow the trigger word

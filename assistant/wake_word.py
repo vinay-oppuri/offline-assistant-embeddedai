@@ -1,5 +1,8 @@
-import sounddevice as sd
+from statistics import mean
+
 from pymicro_wakeword import MicroWakeWord, MicroWakeWordFeatures, Model
+
+from assistant.audio_stream import AudioStream
 
 
 class WakeWordDetector:
@@ -11,8 +14,6 @@ class WakeWordDetector:
             self.mww.probability_cutoff = 0.5   # don't go too low — causes false triggers
             self.mww.sliding_window_size = 5
             self.mww_features = MicroWakeWordFeatures()
-            self.sample_rate = 16000
-            self.frame_length = 160              # exactly 10ms at 16kHz
             print("[wake] Model loaded: OKAY_NABU")
             print("[wake] Say: 'Okay Nabu'")
         except Exception as e:
@@ -20,39 +21,30 @@ class WakeWordDetector:
             raise SystemExit(1)
 
     def detect(self) -> bool:
+        """Block until the wake word is detected.
+
+        Reads 10 ms frames from the shared AudioStream instead of opening
+        its own OS audio stream.  This keeps a single stream running for
+        the entire voice loop.
+        """
         peak_prob = 0.0
+        stream = AudioStream.get()
 
-        # blocksize must match frame_length — fixes the main audio bug
-        with sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="int16",
-            blocksize=self.frame_length,   # <-- THIS was missing, critical fix
-        ) as stream:
-            while True:
-                audio, _ = stream.read(self.frame_length)
+        while True:
+            frame = stream.read_frame(timeout=0.2)
+            if frame is None:
+                continue
 
-                # audio shape is (160, 1) — flatten before tobytes
-                pcm_bytes = audio.flatten().tobytes()  # <-- flattening fixes byte count
+            for features in self.mww_features.process_streaming(frame):
+                detected = self.mww.process_streaming(features)
 
-                for features in self.mww_features.process_streaming(pcm_bytes):
-                    detected = self.mww.process_streaming(features)
+                # Lightweight probability tracking (no per-frame printing)
+                probs = self.mww._probabilities
+                if len(probs) >= self.mww.sliding_window_size:
+                    prob_mean = sum(probs) / len(probs)
+                    if prob_mean > peak_prob:
+                        peak_prob = prob_mean
 
-                    # debug probability display
-                    probs = self.mww._probabilities
-                    if len(probs) >= self.mww.sliding_window_size:
-                        from statistics import mean
-                        prob_mean = mean(probs)
-                        if prob_mean > peak_prob:
-                            peak_prob = prob_mean
-                        if prob_mean > 0.05:
-                            print(
-                                f"  [prob] current={prob_mean:.3f}  "
-                                f"peak={peak_prob:.3f}  "
-                                f"target={self.mww.probability_cutoff}",
-                                end="\r"
-                            )
-
-                    if detected:
-                        print(f"\n[wake] Detected! peak={peak_prob:.3f}")
-                        return True
+                if detected:
+                    print(f"\n[wake] Detected! peak={peak_prob:.3f}")
+                    return True
